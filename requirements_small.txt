@@ -30,3 +30,5 @@ regex>=2023.10.3
 
 langchain>=0.0.1
 langgraph>=0.0.1
+
+dotenv
