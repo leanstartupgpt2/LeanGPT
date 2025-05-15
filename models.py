@@ -7,12 +7,12 @@ from sqlalchemy.orm import relationship, sessionmaker
 import os
 import json
 import time
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import datetime
 import uuid
 
 # Load environment variables from .env file
-load_dotenv()
+# load_dotenv()
 
 # Create a base class for declarative models
 Base = declarative_base()
@@ -61,9 +61,55 @@ class Config(Base):
     value = Column(Text)
 
 # Database connection and session management
+# def get_db_url():
+#     """Get database URL from environment variables for Neon.tech PostgreSQL"""
+#     # Check for Neon.tech specific environment variables
+#     db_user = os.environ.get('NEON_DB_USER')
+#     db_password = os.environ.get('NEON_DB_PASSWORD')
+#     db_host = os.environ.get('NEON_DB_HOST')
+#     db_name = os.environ.get('NEON_DB_NAME', 'neondb')
+    
+#     # Construct PostgreSQL connection URL
+#     if db_user and db_password and db_host:
+#         return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
+    
+#     # Fallback to DATABASE_URL if set
+#     db_url = os.environ.get('DATABASE_URL')
+#     if db_url:
+#         return db_url
+    
+#     # If no database URL is found, raise an error
+#     raise ValueError("No PostgreSQL connection details found. Please set the NEON_DB_* environment variables.")
 def get_db_url():
-    """Get database URL from environment variables for Neon.tech PostgreSQL"""
-    # Check for Neon.tech specific environment variables
+    """Get database URL from Streamlit secrets or environment variables"""
+    import streamlit as st
+    
+    # First try to get from Streamlit secrets
+    if hasattr(st, 'secrets'):
+        if 'connections' in st.secrets and 'neondb' in st.secrets.connections:
+            # Standard Streamlit secrets format
+            db_data = st.secrets.connections.neondb
+            db_user = db_data.get('username')
+            db_password = db_data.get('password')
+            db_host = db_data.get('host')
+            db_name = db_data.get('database', 'neondb')
+            
+            # Construct PostgreSQL connection URL
+            if db_user and db_password and db_host:
+                return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
+        
+        # Alternative format that might be used
+        elif 'NEON_DB_USER' in st.secrets:
+            db_user = st.secrets.NEON_DB_USER
+            db_password = st.secrets.NEON_DB_PASSWORD
+            db_host = st.secrets.NEON_DB_HOST
+            db_name = st.secrets.get('NEON_DB_NAME', 'neondb')
+            
+            # Construct PostgreSQL connection URL
+            if db_user and db_password and db_host:
+                return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
+    
+    # Fall back to env vars if not using Streamlit secrets
     db_user = os.environ.get('NEON_DB_USER')
     db_password = os.environ.get('NEON_DB_PASSWORD')
     db_host = os.environ.get('NEON_DB_HOST')
@@ -79,7 +125,7 @@ def get_db_url():
         return db_url
     
     # If no database URL is found, raise an error
-    raise ValueError("No PostgreSQL connection details found. Please set the NEON_DB_* environment variables.")
+    raise ValueError("No PostgreSQL connection details found. Please set up database credentials in Streamlit secrets or environment variables.")
 
 # Get the database URL
 db_url = get_db_url()
