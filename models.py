@@ -61,7 +61,6 @@ class Config(Base):
     key = Column(String(50), unique=True, nullable=False)
     value = Column(Text)
 
-# Database connection and session management
 def get_db_url():
     """Get database URL from environment variables for Neon.tech PostgreSQL"""
     # Check for Neon.tech specific environment variables
@@ -79,8 +78,25 @@ def get_db_url():
     if db_url:
         return db_url
     
-    # If no database URL is found, raise an error
-    raise ValueError("No PostgreSQL connection details found. Please set the NEON_DB_* environment variables.")
+    # Check for Streamlit secrets - import streamlit here to avoid circular imports
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and 'database' in st.secrets:
+            db_secrets = st.secrets['database']
+            if all(key in db_secrets for key in ['user', 'password', 'host']):
+                db_name = db_secrets.get('name', 'neondb')
+                print(f"✅ Found Streamlit secrets for database connection")
+                return f"postgresql://{db_secrets['user']}:{db_secrets['password']}@{db_secrets['host']}/{db_name}"
+        else:
+            print("⚠️  Streamlit secrets not found or 'database' section missing")
+    except ImportError:
+        print("⚠️  Streamlit not available for secrets")
+    except Exception as e:
+        print(f"⚠️  Error reading Streamlit secrets: {e}")
+    
+    # If no database URL is found, return None instead of raising error
+    print("⚠️  No database configuration found")
+    return None
 
 # Get the database URL
 db_url = get_db_url()
