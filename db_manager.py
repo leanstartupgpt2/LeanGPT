@@ -52,7 +52,29 @@ def execute_with_retry(func, *args, **kwargs):
                 print(f"Failed after {max_tries} attempts: {e}")
                 raise  # Re-raise the last exception
 
-# User management functions
+
+
+def debug_user_permissions():
+    """Debug helper to print user permissions directly from database"""
+    session = Session()
+    try:
+        users = session.query(User).all()
+        user_info = []
+        for user in users:
+            has_attr = hasattr(user, 'can_use_api_key')
+            can_use_api = getattr(user, 'can_use_api_key', None) if has_attr else "N/A"
+            user_info.append({
+                "username": user.username,
+                "role": user.role,
+                "has_can_use_api_key_attr": has_attr,
+                "can_use_api_key": can_use_api,
+                "can_use_api_key_type": type(can_use_api).__name__
+            })
+        return user_info
+    finally:
+        session.close()
+        
+
 def get_users():
     """Get list of users"""
     def _get_users():
@@ -60,7 +82,9 @@ def get_users():
         try:
             users = session.query(User).all()
             # Convert to list of dictionaries for compatibility with existing code
-            return [{"username": user.username, "password": user.password, "role": user.role} for user in users]
+            return [{"username": user.username, "password": user.password, "role": user.role, 
+                    "can_use_api_key": user.can_use_api_key if hasattr(user, 'can_use_api_key') else False} 
+                    for user in users]
         finally:
             session.close()
     
@@ -84,7 +108,8 @@ def add_user(user_data):
             new_user = User(
                 username=user_data["username"],
                 password=user_data["password"],
-                role=user_data["role"]
+                role=user_data["role"],
+                can_use_api_key=user_data.get("can_use_api_key", False)
             )
             session.add(new_user)
             session.commit()
@@ -101,20 +126,30 @@ def add_user(user_data):
         print(f"Failed to add user: {e}")
         return False
 
-def update_users(users_list):
-    """Update users from list of dictionaries"""
-    def _update_users(users_list):
+def update_users(users_df):
+    """Update users from a pandas DataFrame"""
+    def _update_users(users_df):
         session = Session()
         try:
             # Get all current users
             current_users = {user.username: user for user in session.query(User).all()}
             
             # Update existing users
-            for user_data in users_list:
-                if user_data["username"] in current_users:
-                    user = current_users[user_data["username"]]
-                    user.password = user_data["password"]
-                    user.role = user_data["role"]
+            for _, row in users_df.iterrows():
+                username = row["username"]
+                if username in current_users:
+                    user = current_users[username]
+                    user.password = row["password"]
+                    user.role = row["role"]
+                    
+                    # Handle can_use_api_key - check if the column exists
+                    if hasattr(user, 'can_use_api_key') and "can_use_api_key" in row:
+                        # Ensure boolean conversion for the can_use_api_key field
+                        can_use_api_key = row.get("can_use_api_key", False)
+                        if isinstance(can_use_api_key, str):
+                            can_use_api_key = can_use_api_key.lower() in ['true', 'yes', '1', 't', 'y']
+                        user.can_use_api_key = bool(can_use_api_key)
+                        print(f"Updating user {username} can_use_api_key to {user.can_use_api_key}")
             
             # Commit changes
             session.commit()
@@ -126,10 +161,11 @@ def update_users(users_list):
             session.close()
     
     try:
-        return execute_with_retry(_update_users, users_list)
+        return execute_with_retry(_update_users, users_df)
     except Exception as e:
         print(f"Failed to update users: {e}")
         return False
+
 
 # Agent management functions
 def get_agents():
@@ -211,6 +247,44 @@ def add_agent(agent_data):
         return execute_with_retry(_add_agent, agent_data)
     except Exception as e:
         print(f"Failed to add agent: {e}")
+        return False
+    
+def delete_agent(index):
+    """Delete an agent by index"""
+    def _delete_agent(index):
+        session = Session()
+        try:
+            # Get all agents (ordered by ID)
+            agents = session.query(Agent).order_by(Agent.id).all()
+            
+            # Check if index is valid
+            if 0 <= index < len(agents):
+                agent = agents[index]
+                
+                # First delete any chat history associated with this agent
+                # This is necessary due to foreign key constraints
+                chat_histories = session.query(ChatHistory).filter_by(agent_id=agent.id).all()
+                for chat in chat_histories:
+                    session.delete(chat)
+                
+                # Now delete the agent
+                session.delete(agent)
+                
+                # Commit changes
+                session.commit()
+                return True
+            return False
+        except Exception as e:
+            session.rollback()
+            print(f"Error deleting agent: {e}")
+            raise e
+        finally:
+            session.close()
+    
+    try:
+        return execute_with_retry(_delete_agent, index)
+    except Exception as e:
+        print(f"Failed to delete agent: {e}")
         return False
 
 # Chat history functions
@@ -312,6 +386,65 @@ def save_chat_history(username, agent_name, conversation_id, chat_history):
 #         print(f"Failed to load chat history: {e}")
 #         return {}
 
+def get_unified_conversations(username):
+    """Get list of all conversations for a user (unified across agents)"""
+    def _get_unified_conversations(username):
+        session = Session()
+        try:
+            # Get user
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                return []
+            
+            # Get all conversations for this user, ordered by most recent
+            conversations = session.query(ChatHistory).filter_by(
+                user_id=user.id
+            ).order_by(ChatHistory.created_at.desc()).all()
+            
+            # Convert to list of dicts with conversation info
+            result = []
+            for conv in conversations:
+                # Get agent info
+                agent = session.query(Agent).filter_by(id=conv.agent_id).first()
+                agent_name = agent.name if agent else "Unknown Agent"
+                
+                # Count total messages and get preview
+                message_count = len(conv.messages) if conv.messages else 0
+                preview = ""
+                agents_used = set()
+                
+                if conv.messages:
+                    # Get first user message as preview
+                    for msg in conv.messages:
+                        if msg.get("role") == "user" and msg.get("content"):
+                            preview = msg["content"][:50] + "..." if len(msg["content"]) > 50 else msg["content"]
+                            break
+                    
+                    # Count unique agents used in this conversation
+                    for msg in conv.messages:
+                        if msg.get("role") == "assistant" and msg.get("agent"):
+                            agents_used.add(msg["agent"])
+                
+                result.append({
+                    'conversation_id': conv.conversation_id,
+                    'created_at': conv.created_at.isoformat() if conv.created_at else None,
+                    'message_count': message_count,
+                    'preview': preview,
+                    'primary_agent': agent_name,
+                    'agents_used': list(agents_used),
+                    'multi_agent': len(agents_used) > 1
+                })
+            
+            return result
+        finally:
+            session.close()
+    
+    try:
+        return execute_with_retry(_get_unified_conversations, username)
+    except Exception as e:
+        print(f"Failed to get unified conversations: {e}")
+        return []
+
 def get_conversations(username, agent_name):
     """Get list of conversations for a user and agent"""
     def _get_conversations(username, agent_name):
@@ -405,6 +538,38 @@ def load_chat_history(username):
     except Exception as e:
         print(f"Failed to load chat history: {e}")
         return {}  # Return empty dict if all attempts fail
+    
+def load_conversation_by_id(username, conversation_id):
+    """Load a specific conversation by ID"""
+    def _load_conversation_by_id(username, conversation_id):
+        session = Session()
+        try:
+            # Get user
+            user = session.query(User).filter_by(username=username).first()
+            if not user:
+                return None
+            
+            # Get the specific conversation
+            chat = session.query(ChatHistory).filter_by(
+                user_id=user.id, conversation_id=conversation_id
+            ).first()
+            
+            if chat:
+                return {
+                    'messages': chat.messages,
+                    'created_at': chat.created_at.isoformat() if chat.created_at else None,
+                    'conversation_id': chat.conversation_id
+                }
+            return None
+        finally:
+            session.close()
+    
+    try:
+        return execute_with_retry(_load_conversation_by_id, username, conversation_id)
+    except Exception as e:
+        print(f"Failed to load conversation {conversation_id}: {e}")
+        return None
+
 
 # Config functions
 def get_config():

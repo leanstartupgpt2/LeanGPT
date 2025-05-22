@@ -1,23 +1,24 @@
 # Design the ORM model for the DB and connect to postgres via neon
 # Makes default main agents that will be used in the langchain implementation
 
-from sqlalchemy import Column, String, Integer, Text, ForeignKey, create_engine, MetaData, JSON, DateTime
+from sqlalchemy import Column, String, Integer, Text, ForeignKey, create_engine, MetaData, JSON, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import os
 import json
 import time
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 import datetime
 import uuid
 
 # Load environment variables from .env file
-# load_dotenv()
+load_dotenv()
 
 # Create a base class for declarative models
 Base = declarative_base()
 
 # Define ORM models
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -25,10 +26,10 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     password = Column(String(100), nullable=False)
     role = Column(String(20), default='user')
+    can_use_api_key = Column(Boolean, default=False)  # New column for API key access permission
     
     # One-to-many relationship with ChatHistory
     chats = relationship("ChatHistory", back_populates="user", cascade="all, delete-orphan")
-
 class Agent(Base):
     __tablename__ = 'agents'
     
@@ -61,155 +62,44 @@ class Config(Base):
     value = Column(Text)
 
 # Database connection and session management
-# def get_db_url():
-#     """Get database URL from environment variables for Neon.tech PostgreSQL"""
-#     # Check for Neon.tech specific environment variables
-#     db_user = os.environ.get('NEON_DB_USER')
-#     db_password = os.environ.get('NEON_DB_PASSWORD')
-#     db_host = os.environ.get('NEON_DB_HOST')
-#     db_name = os.environ.get('NEON_DB_NAME', 'neondb')
-    
-#     # Construct PostgreSQL connection URL
-#     if db_user and db_password and db_host:
-#         return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
-    
-#     # Fallback to DATABASE_URL if set
-#     db_url = os.environ.get('DATABASE_URL')
-#     if db_url:
-#         return db_url
-    
-#     # If no database URL is found, raise an error
-#     raise ValueError("No PostgreSQL connection details found. Please set the NEON_DB_* environment variables.")
 def get_db_url():
-    """Get database URL from Streamlit secrets or environment variables with fallback"""
-    import streamlit as st
+    """Get database URL from environment variables for Neon.tech PostgreSQL"""
+    # Check for Neon.tech specific environment variables
+    db_user = os.environ.get('NEON_DB_USER')
+    db_password = os.environ.get('NEON_DB_PASSWORD')
+    db_host = os.environ.get('NEON_DB_HOST')
+    db_name = os.environ.get('NEON_DB_NAME', 'neondb')
     
-    # Debug output (only visible in logs)
-    print("Checking for database credentials...")
+    # Construct PostgreSQL connection URL
+    if db_user and db_password and db_host:
+        return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
     
-    try:
-        # First try to get from Streamlit secrets
-        if hasattr(st, 'secrets'):
-            print("Streamlit secrets found, checking for database credentials...")
-            
-            # Print available secret keys (without values) for debugging
-            if hasattr(st.secrets, '_secrets'):
-                print(f"Available secret keys: {list(st.secrets._secrets.keys())}")
-            
-            # Check standard Streamlit secrets format
-            if 'connections' in st.secrets and 'neondb' in st.secrets.connections:
-                print("Found database credentials in st.secrets.connections.neondb")
-                db_data = st.secrets.connections.neondb
-                db_user = db_data.get('username')
-                db_password = db_data.get('password')
-                db_host = db_data.get('host')
-                db_name = db_data.get('database', 'neondb')
-                
-                # Construct PostgreSQL connection URL
-                if db_user and db_password and db_host:
-                    return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
-            
-            # Alternative format that might be used
-            elif all(key in st.secrets for key in ['NEON_DB_USER', 'NEON_DB_PASSWORD', 'NEON_DB_HOST']):
-                print("Found database credentials in st.secrets direct keys")
-                db_user = st.secrets.NEON_DB_USER
-                db_password = st.secrets.NEON_DB_PASSWORD
-                db_host = st.secrets.NEON_DB_HOST
-                db_name = st.secrets.get('NEON_DB_NAME', 'neondb')
-                
-                # Construct PostgreSQL connection URL
-                return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
-                
-            # Another possible format in Streamlit Cloud
-            elif 'db' in st.secrets:
-                print("Found database credentials in st.secrets.db")
-                db_data = st.secrets.db
-                db_user = db_data.get('username') or db_data.get('user')
-                db_password = db_data.get('password') or db_data.get('pass')
-                db_host = db_data.get('host') or db_data.get('server')
-                db_name = db_data.get('database') or db_data.get('name', 'neondb')
-                
-                # Construct PostgreSQL connection URL
-                if db_user and db_password and db_host:
-                    return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
-        
-        # Fall back to env vars if not using Streamlit secrets
-        print("Checking environment variables...")
-        db_user = os.environ.get('NEON_DB_USER')
-        db_password = os.environ.get('NEON_DB_PASSWORD')
-        db_host = os.environ.get('NEON_DB_HOST')
-        db_name = os.environ.get('NEON_DB_NAME', 'neondb')
-        
-        # Construct PostgreSQL connection URL from environment variables
-        if db_user and db_password and db_host:
-            print("Found database credentials in environment variables")
-            return f'postgresql://{db_user}:{db_password}@{db_host}/{db_name}'
-        
-        # Fallback to DATABASE_URL if set
-        db_url = os.environ.get('DATABASE_URL')
-        if db_url:
-            print("Found DATABASE_URL environment variable")
-            return db_url
-        
-        # FALLBACK FOR DEMO: Return a SQLite URL instead
-        print("No PostgreSQL credentials found, falling back to SQLite")
-        import tempfile
-        db_path = os.path.join(tempfile.gettempdir(), 'streamlit_chatbot.db')
-        return f'sqlite:///{db_path}'
-        
-    except Exception as e:
-        print(f"Error getting database URL: {e}")
-        # Final fallback - use SQLite in memory
-        print("Using SQLite in-memory database as final fallback")
-        return 'sqlite://'  # In-memory SQLite database
+    # Fallback to DATABASE_URL if set
+    db_url = os.environ.get('DATABASE_URL')
+    if db_url:
+        return db_url
+    
+    # If no database URL is found, raise an error
+    raise ValueError("No PostgreSQL connection details found. Please set the NEON_DB_* environment variables.")
 
-# # Get the database URL
-# db_url = get_db_url()
-
-# # Configure PostgreSQL engine with appropriate settings for Neon.tech
-# engine = create_engine(
-#     db_url,
-#     pool_pre_ping=True,  # Check connection before use
-#     pool_recycle=300,    # Recycle connections every 5 minutes
-#     pool_timeout=30,     # Connection timeout
-#     max_overflow=5,      # Allow up to 5 connections beyond pool_size
-#     pool_size=3,         # Maintain a smaller pool for serverless environments
-#     echo=False,          # Set to True for debugging SQL queries
-#     connect_args={
-#         "connect_timeout": 10,  # Connection timeout in seconds
-#         "application_name": "Multi-Agent-Chatbot", # Identify application in database logs
-#         "sslmode": "require"    # Require SSL for Neon.tech connections
-#     }
-# )
 # Get the database URL
 db_url = get_db_url()
 
-# Configure database engine with appropriate settings based on URL type
-if db_url.startswith('postgresql'):
-    # PostgreSQL configuration
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,      # Check connection before use
-        pool_recycle=300,        # Recycle connections every 5 minutes
-        pool_timeout=30,         # Connection timeout
-        max_overflow=5,          # Allow up to 5 connections beyond pool_size
-        pool_size=3,             # Maintain a smaller pool for serverless environments
-        echo=False,              # Set to True for debugging SQL queries
-        connect_args={
-            "connect_timeout": 10,  # Connection timeout in seconds
-            "application_name": "Multi-Agent-Chatbot", # Identify application in database logs
-            "sslmode": "require"    # Require SSL for Neon.tech connections
-        }
-    )
-else:
-    # SQLite configuration (simpler)
-    engine = create_engine(
-        db_url,
-        echo=False,              # Set to True for debugging SQL queries
-        connect_args={
-            "check_same_thread": False  # Allow SQLite to be used from multiple threads
-        }
-    )
+# Configure PostgreSQL engine with appropriate settings for Neon.tech
+engine = create_engine(
+    db_url,
+    pool_pre_ping=True,  # Check connection before use
+    pool_recycle=300,    # Recycle connections every 5 minutes
+    pool_timeout=30,     # Connection timeout
+    max_overflow=5,      # Allow up to 5 connections beyond pool_size
+    pool_size=3,         # Maintain a smaller pool for serverless environments
+    echo=False,          # Set to True for debugging SQL queries
+    connect_args={
+        "connect_timeout": 10,  # Connection timeout in seconds
+        "application_name": "Multi-Agent-Chatbot", # Identify application in database logs
+        "sslmode": "require"    # Require SSL for Neon.tech connections
+    }
+)
 
 Session = sessionmaker(bind=engine)
 
@@ -256,23 +146,7 @@ def setup_database():
         
         # Check if default agents exist
         if session.query(Agent).count() == 0:
-            default_agents = [
-                Agent(
-                    name="General Assistant",
-                    description="A helpful, balanced, and honest assistant that can discuss a wide range of topics.",
-                    system_prompt="You are a helpful, balanced, and honest assistant. You answer questions thoughtfully, acknowledging different perspectives on complex issues. You never claim to have personal opinions, feelings, or experiences. If a question is ambiguous, harmful, or you don't know the answer, say so clearly."
-                ),
-                Agent(
-                    name="Code Expert",
-                    description="A specialized assistant that helps with programming and coding questions.",
-                    system_prompt="You are a coding expert assistant. Provide clear, efficient, and well-commented code examples. Explain your approach and consider edge cases. If multiple languages or solutions are appropriate, note the tradeoffs. Format code with proper syntax highlighting using triple backticks. Avoid deprecated features and insecure patterns."
-                ),
-                Agent(
-                    name="Creative Writer",
-                    description="An assistant focused on creative writing, storytelling, and creative content generation.",
-                    system_prompt="You are a creative writing assistant with a flair for engaging, imaginative content. Help users craft compelling stories, develop characters, refine plots, and generate creative ideas. Provide constructive feedback on writing while maintaining the user's voice and intent. When asked to generate content, create vivid, original material that matches the requested style and tone."
-                )
-            ]
+            default_agents = [ ] #removed
             for agent in default_agents:
                 session.add(agent)
             print("Created default agents")

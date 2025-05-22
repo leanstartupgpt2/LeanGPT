@@ -8,6 +8,7 @@ import admin
 import rag_system
 from models import setup_database
 import traceback
+import time
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -21,22 +22,44 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize session state with all required variables
+def initialize_session_state():
+    """Initialize all session state variables to prevent KeyError"""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "username" not in st.session_state:
+        st.session_state.username = None
+    if "role" not in st.session_state:
+        st.session_state.role = None
+    if "page" not in st.session_state:
+        st.session_state.page = "chat"
+    if "current_agent" not in st.session_state:
+        st.session_state.current_agent = None
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = {}
+    if "unified_chat_history" not in st.session_state:
+        st.session_state.unified_chat_history = {}
+    if "show_agent_recommendation" not in st.session_state:
+        st.session_state.show_agent_recommendation = False
+    if "show_api_key_panel" not in st.session_state:
+        st.session_state.show_api_key_panel = False
+    if "debug_mode" not in st.session_state:
+        st.session_state.debug_mode = False
+    if "waiting_for_response" not in st.session_state:
+        st.session_state.waiting_for_response = False
+    if "new_message" not in st.session_state:
+        st.session_state.new_message = None
+    if "current_conversation_id" not in st.session_state:
+        st.session_state.current_conversation_id = {}
+    if "agent_switch_suggestion" not in st.session_state:
+        st.session_state.agent_switch_suggestion = None
+    if "last_query" not in st.session_state:
+        st.session_state.last_query = ""
+    if "unified_conversation_id" not in st.session_state:
+        st.session_state.unified_conversation_id = None
+
 # Initialize session state
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-    st.session_state.username = None
-    st.session_state.role = None
-    st.session_state.page = "chat"
-    st.session_state.current_agent = None
-    st.session_state.chat_history = {}  # Will store {agent_name: {conv_id: messages}}
-    st.session_state.show_agent_recommendation = False
-    st.session_state.show_api_key_panel = False
-    st.session_state.debug_mode = False
-    st.session_state.waiting_for_response = False
-    st.session_state.new_message = None
-    
-if "current_conversation_id" not in st.session_state:
-    st.session_state.current_conversation_id = {}  # Will store {agent_name: conv_id}
+initialize_session_state()
 
 # Initialize the database
 try:
@@ -45,7 +68,6 @@ except Exception as e:
     st.error(f"Error setting up database: {e}")
     st.info("Please make sure the database credentials are correctly set in the environment variables.")
     st.code(traceback.format_exc())
-
 
 # Application header and sidebar
 def render_sidebar():
@@ -70,136 +92,275 @@ def render_sidebar():
             elif selected_page == "Admin":
                 st.session_state.page = "admin"
             
-            # Agent selection
+            # Agent selection and conversation management
             if st.session_state.page == "chat":
-                st.subheader("Select Agent")
+                st.subheader("Current Agent")
                 agents = db_manager.get_agents()
                 
                 if agents:
                     agent_names = [agent["name"] for agent in agents]
+                    
+                    # Agent selection
                     current_agent = st.selectbox(
-                        "Choose your assistant:",
+                        "Active Assistant:",
                         agent_names,
-                        index=agent_names.index(st.session_state.current_agent) if st.session_state.current_agent in agent_names else 0
+                        index=agent_names.index(st.session_state.current_agent) if st.session_state.current_agent in agent_names else 0,
+                        help="Switch agents within the same conversation"
                     )
                     
                     if current_agent != st.session_state.current_agent:
                         st.session_state.current_agent = current_agent
                         st.rerun()
                     
-                    # Display agent description
+                    # Display current agent info
                     selected_agent = next((a for a in agents if a["name"] == current_agent), None)
                     if selected_agent:
-                        st.markdown(f"**{selected_agent['description']}**")
+                        with st.expander("ℹ️ Agent Info", expanded=False):
+                            st.write(f"**{selected_agent['description']}**")
+                            try:
+                                expertise = rag_system.get_agent_expertise_summary(current_agent)
+                                st.caption(f"Expertise: {expertise}")
+                            except:
+                                st.caption("Specialized assistant")
                     
-                    # Conversation management - add this here
+                    # Agent switch suggestion panel
+                    if st.session_state.agent_switch_suggestion:
+                        with st.container():
+                            suggestion = st.session_state.agent_switch_suggestion
+                            st.info(f"💡 **Agent Recommendation**\n\n"
+                                   f"**{suggestion['recommended_agent']}** might be better suited for your query.\n\n"
+                                   f"Confidence: {suggestion['confidence']:.1%}")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("🔄 Switch Agent", use_container_width=True):
+                                    st.session_state.current_agent = suggestion['recommended_agent']
+                                    st.session_state.agent_switch_suggestion = None
+                                    st.success(f"Switched to {suggestion['recommended_agent']}")
+                                    st.rerun()
+                            with col2:
+                                if st.button("❌ Keep Current", use_container_width=True):
+                                    st.session_state.agent_switch_suggestion = None
+                                    st.rerun()
+                    
+                    # Unified conversation management
                     st.subheader("Conversations")
                     
                     # New conversation button
-                    if st.button("New Conversation"):
+                    if st.button("✨ New Conversation", use_container_width=True):
                         new_id = generate_conversation_id()
-                        st.session_state.current_conversation_id[current_agent] = new_id
-                        if current_agent not in st.session_state.chat_history:
-                            st.session_state.chat_history[current_agent] = {}
-                        st.session_state.chat_history[current_agent][new_id] = []
+                        st.session_state.unified_conversation_id = new_id
+                        st.session_state.unified_chat_history[new_id] = []
                         st.rerun()
                     
-                    # List of existing conversations
-                    conversations = db_manager.get_conversations(
-                        st.session_state.username, 
-                        current_agent
-                    )
+                    # List of existing conversations (unified across all agents)
+                    try:
+                        conversations = db_manager.get_unified_conversations(st.session_state.username)
+                    except:
+                        # Fallback to old method if new method not available
+                        conversations = db_manager.get_conversations(st.session_state.username)
 
                     if conversations:
-                        st.write("Select a previous conversation:")
+                        st.write("**Recent Conversations:**")
                         
-                        for idx, conv in enumerate(conversations):
+                        for idx, conv in enumerate(conversations[:10]):  # Show latest 10 conversations
                             # Format date and show preview
                             created_date = conv.get('created_at', 'Unknown date')
                             if isinstance(created_date, str) and len(created_date) > 16:
-                                # Format as dd-mm-yy hh:mm
                                 try:
                                     from datetime import datetime
-                                    # Parse the ISO format string
                                     dt = datetime.fromisoformat(created_date.replace('Z', '+00:00'))
-                                    # Format as dd-mm-yy hh:mm
                                     created_date = dt.strftime('%d-%m-%y %H:%M')
                                 except:
-                                    # Fallback in case of parsing error
                                     created_date = created_date[:16].replace('T', ' ')
                             
+                            # Create conversation label with multi-agent indicator
                             msg_count = conv.get('message_count', 0)
-                            conv_label = f"{created_date} ({msg_count} messages)"
+                            preview = conv.get('preview', 'No preview')
+                            agents_used = conv.get('agents_used', [])
+                            is_multi_agent = conv.get('multi_agent', False) or len(agents_used) > 1
                             
-                            if st.button(conv_label, key=f"conv_{idx}"):
-                                st.session_state.current_conversation_id[current_agent] = conv['conversation_id']
-                                # The actual messages will be loaded in the next step
+                            # Multi-agent indicator
+                            agent_indicator = "🔄" if is_multi_agent else "🤖"
+                            agents_text = f" ({', '.join(agents_used[:2])}{'...' if len(agents_used) > 2 else ''})" if agents_used else ""
+                            
+                            conv_label = f"{agent_indicator} {created_date}"
+                            conv_help = f"{preview}\n{msg_count} messages{agents_text}"
+                            
+                            if st.button(conv_label, key=f"conv_{idx}", help=conv_help, use_container_width=True):
+                                st.session_state.unified_conversation_id = conv['conversation_id']
+                                # Load the conversation
+                                load_conversation(conv['conversation_id'])
                                 st.rerun()
-                    
-                    # Clear chat button
-                    # if st.button("Clear Chat"):
-                    #     chat.clear_chat_history(st.session_state.current_agent)
-                    #     st.rerun()
                         
-                    # Show agent recommendations toggle
+                        # Show more button if there are more conversations
+                        if len(conversations) > 10:
+                            if st.button(f"📋 Show {len(conversations) - 10} more...", use_container_width=True):
+                                # Could implement pagination here
+                                pass
+                        
+                    # Agent recommendations toggle
                     st.session_state.show_agent_recommendation = st.toggle(
-                        "Show agent recommendations",
-                        value=st.session_state.show_agent_recommendation
+                        "🔄 Auto Agent Switching",
+                        value=st.session_state.show_agent_recommendation,
+                        help="Automatically switch to the best agent for each query"
                     )
+                    
+                    # Manual agent recommendations
+                    if st.session_state.last_query and st.button("🔍 Find Best Agent", use_container_width=True):
+                        try:
+                            recommendations = rag_system.get_agent_recommendations(
+                                st.session_state.last_query, 
+                                top_n=3, 
+                                exclude_current=st.session_state.current_agent
+                            )
+                            if recommendations:
+                                st.write("**Recommended agents:**")
+                                for i, agent in enumerate(recommendations[:3]):
+                                    if st.button(f"🔄 Switch to {agent}", key=f"rec_{i}", use_container_width=True):
+                                        st.session_state.current_agent = agent
+                                        st.success(f"Switched to {agent}")
+                                        st.rerun()
+                        except Exception as e:
+                            st.error(f"Error getting recommendations: {e}")
                 else:
                     st.error("No agents found. Please contact an administrator.")
             
             # API Key Configuration Section
-            st.subheader("API Configuration")
-            api_key_button = st.button("📝 Configure OpenAI API Key")
+            st.subheader("⚙️ Configuration")
+            api_key_button = st.button("🔑 OpenAI API Key", use_container_width=True)
             if api_key_button:
                 st.session_state.show_api_key_panel = not st.session_state.show_api_key_panel
             
             # Debug mode toggle (for admins only)
             if st.session_state.role == "admin":
                 st.session_state.debug_mode = st.toggle(
-                    "Debug Mode", 
+                    "🐛 Debug Mode", 
                     value=st.session_state.debug_mode,
                     help="Enable debug information"
                 )
             
             # Logout button
-            if st.button("Logout"):
+            st.markdown("---")
+            if st.button("🚪 Logout", use_container_width=True):
                 auth.logout()
                 st.rerun()
         else:
             st.info("Please login or register to continue.")
 
-# Function to process user input and get agent response
-def process_message(user_input, agent_chat_history, conversation_id):
-    # Add user message to chat history first - this will be displayed immediately
-    agent_chat_history.append({"role": "user", "content": user_input})
+def load_conversation(conversation_id):
+    """Load a specific conversation into the session state"""
+    try:
+        # Try new unified method first
+        conversation_data = db_manager.load_conversation_by_id(
+            st.session_state.username, 
+            conversation_id
+        )
+        
+        if conversation_data:
+            st.session_state.unified_chat_history[conversation_id] = conversation_data['messages']
+        else:
+            st.session_state.unified_chat_history[conversation_id] = []
+    except:
+        # Fallback to old method
+        try:
+            chat_history = db_manager.load_chat_history(st.session_state.username)
+            if conversation_id in chat_history:
+                st.session_state.unified_chat_history[conversation_id] = chat_history[conversation_id].get('messages', [])
+            else:
+                st.session_state.unified_chat_history[conversation_id] = []
+        except Exception as e:
+            st.error(f"Error loading conversation: {e}")
+            st.session_state.unified_chat_history[conversation_id] = []
+
+def process_message_with_agent_switching(user_input, chat_history, conversation_id):
+    """Process user input with intelligent agent switching"""
+    
+    # Store the query for potential agent recommendations
+    st.session_state.last_query = user_input
+    
+    # Add user message to chat history first
+    user_message = {"role": "user", "content": user_input}
+    chat_history.append(user_message)
     
     try:
-        # GET THE PROMPT OF THE MAIN AGENT IN THE LANGGRAPH THAT IS IMPLEMENTED BY THE USER
+        # Check if we should automatically switch agents
+        if st.session_state.show_agent_recommendation:
+            try:
+                should_switch, recommended_agent, confidence = rag_system.should_switch_agent(
+                    user_input, 
+                    st.session_state.current_agent,
+                    threshold=0.10
+                )
+                
+                # Automatically switch to the recommended agent if confidence is high enough
+                if should_switch and recommended_agent != st.session_state.current_agent:
+                    old_agent = st.session_state.current_agent
+                    st.session_state.current_agent = recommended_agent
+                    
+                    # Add a system message to show the switch happened
+                    system_message = {
+                        "role": "system",
+                        "content": f"🔄 **Automatically switched from {old_agent} to {recommended_agent}** (Confidence: {confidence:.1%})",
+                        "agent": "System"
+                    }
+                    chat_history.append(system_message)
+                    
+                    # Optional: Show notification in the UI
+                    if hasattr(st, 'toast'):
+                        st.toast(f"🔄 Switched to {recommended_agent}", icon="🤖")
+                    
+            except Exception as e:
+                if st.session_state.debug_mode:
+                    st.warning(f"Auto-switch error: {e}")
+        
+        # Get current agent info (might have changed due to auto-switch)
         agents = db_manager.get_agents()
         agent_info = next((a for a in agents if a["name"] == st.session_state.current_agent), None)
         
         if agent_info:
             system_prompt = agent_info["system_prompt"]
             
-            # Set waiting flag to display the "Thinking..." message
+            # Set waiting flag
             st.session_state.waiting_for_response = True
             
-            # GET RESPONSE FORM THE AGENT.PY THAT CONTAINS THE LANGGRAPH IMPLEMENTATION, WE PASS THE MAIN AGENT (DEFINED BY THE USER) TO BE USED IN THE LANGGRAPH.
-            response = agent_module.get_agent_response(user_input, system_prompt, agent_chat_history)
-            
-            # Add agent response to chat history
-            agent_chat_history.append({"role": "assistant", "content": response})
-            
-            # Save chat history to database
-            if st.session_state.authenticated and st.session_state.username:
-                save_success = db_manager.save_chat_history(
-                    st.session_state.username,
-                    st.session_state.current_agent,
-                    conversation_id,  # Include conversation ID here
-                    agent_chat_history
+            # Get response from current agent
+            try:
+                response = agent_module.get_agent_response(
+                    user_input, 
+                    system_prompt, 
+                    chat_history,
+                    current_agent_name=st.session_state.current_agent
                 )
+            except:
+                # Fallback to old method
+                response = agent_module.get_agent_response(user_input, system_prompt, chat_history)
+            
+            # Add agent response with agent information
+            assistant_message = {
+                "role": "assistant", 
+                "content": response,
+                "agent": st.session_state.current_agent
+            }
+            chat_history.append(assistant_message)
+            
+            # Save unified chat history
+            if st.session_state.authenticated and st.session_state.username:
+                try:
+                    # Try new unified save method
+                    save_success = db_manager.save_unified_chat_history(
+                        st.session_state.username,
+                        conversation_id,
+                        chat_history
+                    )
+                except:
+                    # Fallback to old method
+                    save_success = db_manager.save_chat_history(
+                        st.session_state.username,
+                        st.session_state.current_agent,
+                        conversation_id,
+                        chat_history
+                    )
                 
                 if st.session_state.debug_mode and not save_success:
                     st.warning("Failed to save chat history to database")
@@ -207,15 +368,17 @@ def process_message(user_input, agent_chat_history, conversation_id):
             # Reset waiting flag
             st.session_state.waiting_for_response = False
             
-            # Return any recommendations if needed
-            if st.session_state.show_agent_recommendation:
-                return rag_system.get_agent_recommendations(user_input, 2)
-            
             return None
+            
     except Exception as e:
         # Add error message to chat history
         error_message = f"I'm sorry, I encountered an error: {str(e)}"
-        agent_chat_history.append({"role": "assistant", "content": error_message})
+        error_msg = {
+            "role": "assistant", 
+            "content": error_message,
+            "agent": st.session_state.current_agent
+        }
+        chat_history.append(error_msg)
         
         # Reset waiting flag
         st.session_state.waiting_for_response = False
@@ -224,8 +387,7 @@ def process_message(user_input, agent_chat_history, conversation_id):
             return traceback.format_exc()
         
         return None
-    
-# Add this function to generate new conversation IDs
+
 def generate_conversation_id():
     """Generate a unique conversation ID"""
     import uuid
@@ -241,140 +403,177 @@ def main():
     else:
         # Show page based on selection
         if st.session_state.page == "chat":
-            render_chat_page()
+            render_enhanced_chat_page()
         elif st.session_state.page == "admin" and st.session_state.role == "admin":
             admin.show_admin_page()
         else:
             st.warning("Page not found or access denied.")
 
-def render_chat_page():
-    st.title(f"Chat with {st.session_state.current_agent}")
+def render_enhanced_chat_page():
+    # Header with current agent and conversation info
+    col1, col2, col3 = st.columns([3, 1, 1])
     
-    # API Key Configuration Panel (shown/hidden based on session state)
+    with col1:
+        st.title(f"💬 Chat with {st.session_state.current_agent}")
+    
+    with col2:
+        if st.session_state.unified_conversation_id:
+            st.caption(f"📝 Conversation: {st.session_state.unified_conversation_id[:8]}...")
+    
+    with col3:
+        # Quick agent switch buttons for top 3 recommended agents
+        if st.session_state.last_query:
+            with st.popover("🔄 Quick Switch"):
+                st.write("**Recommended for your last query:**")
+                try:
+                    recommendations = rag_system.get_agent_recommendations(
+                        st.session_state.last_query, 
+                        top_n=3, 
+                        exclude_current=st.session_state.current_agent
+                    )
+                    for agent in recommendations[:3]:
+                        if st.button(f"➡️ {agent}", key=f"quick_{agent}"):
+                            st.session_state.current_agent = agent
+                            st.rerun()
+                except:
+                    st.write("No recommendations available")
+    
+    # API Key Configuration Panel
     if st.session_state.show_api_key_panel:
-        with st.expander("OpenAI API Key Configuration", expanded=True):
-            st.warning("⚠️ You need to configure an OpenAI API key to use this chatbot. The API key is stored securely in the database.")
+        with st.expander("🔑 OpenAI API Key Configuration", expanded=True):
+            st.warning("⚠️ You need to configure an OpenAI API key to use this chatbot.")
             
-            # Get current configuration
             config = db_manager.get_config()
             current_api_key = config.get("openai_api_key", "")
             api_key_placeholder = "****************************" if current_api_key else "No API key set"
             
-            # Show masked API key and option to update
-            st.text_input("Current OpenAI API Key", value=api_key_placeholder, disabled=True)
-            new_api_key = st.text_input("New OpenAI API Key", type="password", 
-                                       help="Enter your OpenAI API key here. You can get one from https://platform.openai.com/api-keys")
+            st.text_input("Current API Key", value=api_key_placeholder, disabled=True)
+            new_api_key = st.text_input("New API Key", type="password", 
+                                       help="Get your key from https://platform.openai.com/api-keys")
             
             col1, col2 = st.columns([1, 3])
             with col1:
-                if st.button("Save API Key"):
+                if st.button("💾 Save"):
                     if new_api_key:
                         try:
-                            # Update config in database
                             config["openai_api_key"] = new_api_key
                             db_manager.update_config(config)
-                            st.success("API key updated successfully!")
-                            # Hide the panel after successful update
+                            st.success("API key updated!")
                             st.session_state.show_api_key_panel = False
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Error updating API key: {e}")
+                            st.error(f"Error: {e}")
             with col2:
-                if st.button("Close Panel"):
+                if st.button("❌ Close"):
                     st.session_state.show_api_key_panel = False
                     st.rerun()
     
-    # Initialize current agent and ensure it exists in the session state
-    current_agent = st.session_state.current_agent
-    if not current_agent:
-        st.warning("No agent selected. Please select an agent from the sidebar.")
-        return
+    # Initialize conversation if needed
+    if not st.session_state.unified_conversation_id:
+        st.session_state.unified_conversation_id = generate_conversation_id()
     
-    # Initialize conversation ID for this agent if needed
-    if current_agent not in st.session_state.current_conversation_id:
-        st.session_state.current_conversation_id[current_agent] = generate_conversation_id()
-    current_conv_id = st.session_state.current_conversation_id[current_agent]
+    current_conv_id = st.session_state.unified_conversation_id
     
-    # Initialize chat history structure
-    if current_agent not in st.session_state.chat_history:
-        st.session_state.chat_history[current_agent] = {}
-    
-    # Load chat history for the selected conversation
-    if current_conv_id not in st.session_state.chat_history[current_agent]:
-        # Try to load from database first
+    # Initialize unified chat history
+    if current_conv_id not in st.session_state.unified_chat_history:
+        # Try to load from database
         try:
-            loaded_history = db_manager.load_chat_history(st.session_state.username)
-            
-            # Check if we have this conversation in loaded history
-            if (current_agent in loaded_history and 
-                isinstance(loaded_history[current_agent], dict) and
-                current_conv_id in loaded_history[current_agent] and
-                'messages' in loaded_history[current_agent][current_conv_id]):
-                # Extract messages from the structure
-                messages = loaded_history[current_agent][current_conv_id]['messages']
-                st.session_state.chat_history[current_agent][current_conv_id] = messages if isinstance(messages, list) else []
-            else:
-                # Initialize empty list for this conversation
-                st.session_state.chat_history[current_agent][current_conv_id] = []
+            load_conversation(current_conv_id)
         except Exception as e:
-            st.error(f"Error loading chat history: {e}")
-            st.session_state.chat_history[current_agent][current_conv_id] = []
+            if st.session_state.debug_mode:
+                st.error(f"Error loading conversation: {e}")
+            st.session_state.unified_chat_history[current_conv_id] = []
     
-    # Get chat history for the current agent and conversation
-    agent_chat_history = st.session_state.chat_history[current_agent][current_conv_id]
-
-    # Ensure agent_chat_history is a list of message dictionaries
-    if not isinstance(agent_chat_history, list):
-        # If it's the object with 'messages' field, extract it
-        if isinstance(agent_chat_history, dict) and 'messages' in agent_chat_history:
-            agent_chat_history = agent_chat_history['messages']
-        # If it's something else or extraction failed, initialize as empty list
-        if not isinstance(agent_chat_history, list):
-            agent_chat_history = []
-        # Update the session state
-        st.session_state.chat_history[current_agent][current_conv_id] = agent_chat_history
+    # Get current conversation messages
+    chat_history = st.session_state.unified_chat_history[current_conv_id]
     
-    # Create a container for the chat messages
+    # Create chat container
     chat_container = st.container()
     
-    # Display chat messages
+    # Display chat messages with agent indicators
     with chat_container:
-        chat.display_chat_messages(agent_chat_history)
+        display_enhanced_chat_messages(chat_history)
         
-        # If waiting for a response, show a spinner
+        # Show thinking indicator with spinner - this appears in real-time
         if st.session_state.waiting_for_response:
-            with st.chat_message("assistant"):
-                st.write("Thinking...")
+            with st.chat_message("assistant", avatar="🤖"):
+                # Show agent name and thinking indicator
+                st.caption(f"🤖 **{st.session_state.current_agent}**")
+                with st.spinner(""):
+                    st.write("🤔 Thinking...")
+                    # Force the UI to update immediately
+                    time.sleep(0.1)
     
-    # Check if there's a new message in the session state
+    # Agent switch notification
+    if st.session_state.agent_switch_suggestion and not st.session_state.waiting_for_response:
+        suggestion = st.session_state.agent_switch_suggestion
+        st.info(f"💡 **{suggestion['recommended_agent']}** might handle your query better. "
+               f"Check the sidebar to switch agents or continue with {st.session_state.current_agent}.")
+    
+    # Debug information
+    if st.session_state.debug_mode and st.session_state.role == "admin":
+        with st.expander("🐛 Debug Information", expanded=False):
+            st.subheader("Session Info")
+            st.json({
+                "username": st.session_state.username,
+                "current_agent": st.session_state.current_agent,
+                "conversation_id": current_conv_id,
+                "messages_count": len(chat_history),
+                "agent_switch_suggestion": st.session_state.agent_switch_suggestion
+            })
+            
+            st.subheader("Chat History")
+            st.json(chat_history)
+    
+    # Process new message if exists
     if st.session_state.new_message is not None:
-        # Process the message with the existing chat history
-        debug_info = process_message(
+        debug_info = process_message_with_agent_switching(
             st.session_state.new_message, 
-            agent_chat_history, 
-            current_conv_id)  # Pass conversation ID here
+            chat_history, 
+            current_conv_id
+        )
         
-        # Clear the new message
         st.session_state.new_message = None
         
-        # Show agent recommendations if available
-        if debug_info and st.session_state.show_agent_recommendation:
-            current_agent = st.session_state.current_agent
-            # Filter out the current agent
-            other_recommendations = [a for a in debug_info if a != current_agent]
-            if other_recommendations:
-                st.info(f"💡 This query might also be suitable for: {', '.join(other_recommendations)}")
+        if debug_info and st.session_state.debug_mode:
+            st.error("Debug Error Info:")
+            st.code(debug_info)
         
-        # Force a rerun to update the UI
         st.rerun()
     
     # Chat input
     user_input = st.chat_input("Type your message here...")
     
     if user_input:
-        # Store the message in session state to be processed after rerun
+        # Immediately show the user message and set waiting state
         st.session_state.new_message = user_input
+        st.session_state.waiting_for_response = True
         st.rerun()
+
+def display_enhanced_chat_messages(messages):
+    """Display chat messages with agent indicators"""
+    if not messages:
+        st.info("👋 Start a conversation! You can switch agents anytime during our chat.")
+        return
+    
+    for message in messages:
+        # Determine the role and agent
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        agent_name = message.get("agent", "Unknown Agent")
+        
+        if role == "system":
+            # Show system messages (like agent switches) with special styling
+            st.info(content)
+        elif role == "assistant":
+            # Show which agent responded
+            with st.chat_message("assistant", avatar="🤖"):
+                # Agent indicator
+                st.caption(f"🤖 **{agent_name}**")
+                chat.format_message_content(content)
+        else:
+            with st.chat_message("user", avatar="👤"):
+                chat.format_message_content(content)
 
 if __name__ == "__main__":
     main()

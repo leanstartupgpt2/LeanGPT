@@ -84,6 +84,26 @@ def manage_agents():
                 st.rerun()
             except Exception as e:
                 st.error(f"Error updating agents: {e}")
+        
+        # Delete agent section
+        st.subheader("Delete Agent")
+        if agents:
+            agent_names = [agent["name"] for agent in agents]
+            agent_to_delete = st.selectbox("Select agent to delete:", agent_names)
+            
+            if st.button("Delete Agent", type="primary", use_container_width=False):
+                if agent_to_delete:
+                    # Get the index of the agent to delete
+                    agent_index = agent_names.index(agent_to_delete)
+                    
+                    # Add function to delete agent in db_manager
+                    if db_manager.delete_agent(agent_index):
+                        # Update RAG system with new agents
+                        rag_system.update_agent_knowledge()
+                        st.success(f"Agent '{agent_to_delete}' deleted successfully!")
+                        st.rerun()
+                    else:
+                        st.error(f"Error deleting agent '{agent_to_delete}'.")
     else:
         st.warning("No agents found in the database. Add your first agent below.")
     
@@ -135,6 +155,13 @@ def manage_users():
         display_df = user_df.copy()
         display_df["password"] = "********"
         
+        # Ensure can_use_api_key exists and is boolean
+        if "can_use_api_key" not in display_df.columns:
+            display_df["can_use_api_key"] = False
+        else:
+            # Convert to boolean to ensure proper handling in the data editor
+            display_df["can_use_api_key"] = display_df["can_use_api_key"].apply(lambda x: bool(x) if x is not None else False)
+        
         # Display users in a dataframe with editable cells
         edited_df = st.data_editor(
             display_df,
@@ -145,6 +172,11 @@ def manage_users():
                     "Role", 
                     options=["user", "admin"],
                     width="small"
+                ),
+                "can_use_api_key": st.column_config.CheckboxColumn(
+                    "API Key Access",
+                    help="Allow user to use the system API key",
+                    width="small",
                 ),
             },
             disabled=["password"],
@@ -161,17 +193,35 @@ def manage_users():
                     if i < len(user_df):
                         # Update role for existing users
                         user_df.at[i, "role"] = row["role"]
+                        
+                        # Explicitly handle the can_use_api_key field
+                        if "can_use_api_key" in row:
+                            # Debug output
+                            st.write(f"Debug - Setting user {row['username']} can_use_api_key to: {row['can_use_api_key']}")
+                            user_df.at[i, "can_use_api_key"] = bool(row["can_use_api_key"])
+                
+                # Debug output to check the values before database update
+                if st.session_state.debug_mode:
+                    st.write("Values being sent to database:")
+                    st.write(user_df[["username", "role", "can_use_api_key"]])
                 
                 # Update users in database
-                db_manager.update_users(user_df)
+                update_success = db_manager.update_users(user_df)
                 
-                st.success("Users updated successfully!")
-                st.rerun()
+                if update_success:
+                    st.success("Users updated successfully!")
+                    st.rerun()
+                else:
+                    st.error("Failed to update user permissions in the database")
             except Exception as e:
                 st.error(f"Error updating users: {e}")
+                if st.session_state.debug_mode:
+                    import traceback
+                    st.code(traceback.format_exc())
     else:
         st.warning("No users found in the database.")
     
+    # Rest of the function (reset password, CSV import/export) remains the same
     # Reset password section
     st.subheader("Reset User Password")
     
