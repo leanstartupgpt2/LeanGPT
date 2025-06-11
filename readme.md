@@ -2,8 +2,8 @@
 
 A powerful AI chatbot system that allows you to chat with multiple specialized AI assistants, each with unique personalities and expertise. Built with Streamlit and powered by OpenAI's GPT models.
 
-<img width="312" alt="image" src="https://github.com/user-attachments/assets/511d9972-0da2-4966-bd19-852cdb837d98" />
-
+[<img width="312" alt="image" src="https://github.com/user-attachments/assets/511d9972-0da2-4966-bd19-852cdb837d98" />
+](https://github.com/user-attachments/assets/3d734714-18ea-442d-8894-2883f25fa455)
 
 ## ✨ What This App Does
 
